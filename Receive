@@ -1,0 +1,135 @@
+package com.nercms.receive;
+
+import java.io.IOException;
+import java.net.SocketException;
+import java.net.UnknownHostException;
+
+import org.sipdroid.net.RtpPacket;
+import org.sipdroid.net.RtpSocket;
+import org.sipdroid.net.SipdroidSocket;
+
+import android.app.Activity;
+import android.os.Bundle;
+import android.view.Menu;
+import android.view.MenuItem;
+
+public class Receive extends Activity 
+{	
+	static 
+	{
+		System.loadLibrary("H264Decoder_neon");
+	}
+	private boolean isRunning; //�������б�־
+	
+	private RtpSocket rtp_socket = null; //����RTP�׽��� 
+	private RtpPacket rtp_packet = null; //����RTP��
+	private byte[] socketBuffer =new byte[2048]; //������
+	private byte [] buffer = new byte [2048];
+	private long handle = 0; //ƴ֡���ľ��
+	private byte [] frmbuf = new byte[65536]; //֡����
+	
+	Videoplay view = null;
+	
+	public native long CreateH264Packer();
+	public native int PackH264Frame(long handle,byte[] pPayload,int payloadlen,int bMark,int pts, int sequence,byte[]frmbuf);
+	public native void DestroyH264Packer(long handle);
+	
+	public native int CreateDecoder(int width, int height);
+	public native int DecoderNal(byte[] in, int insize, byte[] out);
+	public native int DestoryDecoder(); 
+	
+	
+	public void close()
+	{
+		isRunning = false;
+	}
+	
+    /** Called when the activity is first created. */
+    @Override
+    public void onCreate(Bundle savedInstanceState)
+    {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.main);
+        view = (Videoplay) this.findViewById(R.id.video_play); 
+        if (rtp_socket == null)
+		{
+			try 
+			{
+				rtp_socket = new RtpSocket(new SipdroidSocket(20000)); //��ʼ���׽��֣�20000Ϊ���ն˿ں�
+			} 
+			catch (SocketException e) 
+			{
+				e.printStackTrace();
+			} 
+			catch (UnknownHostException e)
+			{
+				e.printStackTrace();
+			}
+			rtp_packet = new RtpPacket(socketBuffer,0); //��ʼ�� ,socketBuffer�ı�ʱrtp_PacketҲ���Ÿı�
+			handle = CreateH264Packer(); //����ƴ֡��
+			CreateDecoder(352,288); //����������
+			isRunning = true;
+			Decoder decoder=new Decoder();
+			decoder.start(); //����һ���߳�
+		}
+    }
+    
+    @Override
+    public void finalize() //���˳������ʱ���Զ�����
+    {
+    	try 
+    	{
+			super.finalize();
+		}
+    	catch (Throwable e) 
+    	{
+			e.printStackTrace();
+		}
+    	close();
+    }
+    
+    class Decoder extends Thread 
+    {
+    	public void run()
+    	{
+    		while (isRunning)
+			{
+				try 
+				{
+					rtp_socket.receive(rtp_packet); //����һ����
+				}
+				catch (IOException e) 
+				{
+					e.printStackTrace();
+				}
+				int packetSize = rtp_packet.getPayloadLength(); //��ȡ���Ĵ�С
+				if(packetSize<=0) 
+					continue; 
+	      		if(rtp_packet.getPayloadType()!=2) //ȷ�ϸ�������Ϊ2
+	      			continue;
+	      		System.arraycopy(socketBuffer,12, buffer, 0, packetSize); //socketBuffer->buffer
+	      		int sequence=rtp_packet.getSequenceNumber(); //��ȡ���к�
+	            long timestamp=rtp_packet.getTimestamp(); //��ȡʱ���
+	            int bMark=rtp_packet.hasMarker()==true?1:0; //�Ƿ������һ����
+	            int frmSize=PackH264Frame(handle, buffer, packetSize, bMark, (int)timestamp, sequence, frmbuf); //packer=ƴ֡����frmbuf=֡����
+	            if(frmSize<=0) 
+	            	continue;
+	            DecoderNal(frmbuf, frmSize, view.mPixel);//������ͼ�����mPixel��      
+	            view.postInvalidate();
+			}
+    		
+    		//�ر�
+    		if(handle != 0)
+			{
+    			DestroyH264Packer(handle);
+    			handle = 0;
+			}
+    		if(rtp_socket!=null)
+    		{
+    			rtp_socket.close();
+    			rtp_socket=null;
+    		}
+    		DestoryDecoder();
+    	}
+    }
+}
